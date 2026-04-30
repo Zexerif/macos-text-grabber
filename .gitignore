@@ -1,0 +1,16 @@
+# Compiled binaries
+TextGrabberApp
+TextGrabberPro
+hello_arm64
+
+# App bundles (users build these locally via build_app.sh)
+*.app/
+
+# Scratch / temp files
+hello.swift
+macostextgrammer
+run.sh
+
+# macOS junk
+.DS_Store
+*.swp
