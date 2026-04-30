@@ -113,6 +113,42 @@ struct OCRResultView: View {
 struct HighlightBox: View { let rect: CGRect; let isSelected: Bool; var body: some View { Rectangle().fill(isSelected ? Color.accentColor.opacity(0.4) : Color.white.opacity(0.001)).frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY) } }
 struct SelectionRectView: View { let start: CGPoint; let end: CGPoint; var body: some View { let rect = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(start.x - end.x), height: abs(start.y - end.y)); Rectangle().stroke(Color.accentColor, lineWidth: 1).background(Color.accentColor.opacity(0.1)).frame(width: rect.width, height: rect.height).offset(x: rect.minX, y: rect.minY) } }
 
+// MARK: - Help View
+struct HelpView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("How to Use").font(.headline)
+                    Text("1. Click the TextGrabber icon in your menu bar.\n2. Select 'Capture Text' (or press Cmd+C).\n3. Drag to select any area of your screen.\n4. Highlight the recognized text in the result window to copy it.")
+                }
+                
+                Divider()
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("📸 Seeing only your wallpaper?").font(.headline).foregroundColor(.orange)
+                    Text("This is a common macOS permission quirk. If your screenshots are missing windows and only show the desktop background:")
+                    Text("1. Go to the menu icon and select 'Reset Permissions'.\n2. The app will quit. Launch it again from your Applications folder.\n3. Grant 'Screen Recording' permission when prompted.\n4. If it doesn't prompt, manually enable it in System Settings > Privacy & Security > Screen Recording.")
+                }
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("🔒 Gatekeeper Warning").font(.headline)
+                    Text("Since this app is not signed with a paid Apple Developer certificate, you must Right-Click > Open it the very first time you launch it.")
+                }
+                
+                Spacer()
+                
+                HStack {
+                    Spacer()
+                    Button("Got it") { NSApp.keyWindow?.close() }.buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(24)
+        }
+        .frame(width: 450, height: 500)
+    }
+}
+
 // Frees the result window from memory when the user closes it.
 class ResultWindowDelegate: NSObject, NSWindowDelegate {
     var onClose: () -> Void
@@ -136,8 +172,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Capture")
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Capture Text", action: #selector(startCapture), keyEquivalent: "c"))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Help & Troubleshooting", action: #selector(showHelp), keyEquivalent: "/"))
+        menu.addItem(NSMenuItem(title: "Reset Permissions...", action: #selector(resetPermissions), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu
+        
+        checkPermissions()
+    }
+    
+    var helpWindow: NSWindow?
+    @objc func showHelp() {
+        if helpWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.center()
+            window.title = "TextGrabber Help"
+            window.contentView = NSHostingView(rootView: HelpView())
+            window.isReleasedWhenClosed = false
+            helpWindow = window
+        }
+        helpWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    func checkPermissions() {
+        // We let the system trigger the prompt naturally when we first capture,
+        // but we provide the Reset menu as a manual escape hatch.
+        if #available(macOS 10.15, *) {
+            if !CGPreflightScreenCaptureAccess() {
+                print("[TextGrabber] WARNING: Screen Recording permission not granted.")
+            }
+        }
+    }
+    
+    @objc func resetPermissions() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Screen Recording Permissions?"
+        alert.informativeText = "This will reset the permission for TextGrabber. The app will quit, and you will need to grant permission again on next launch."
+        alert.addButton(withTitle: "Reset and Quit")
+        alert.addButton(withTitle: "Cancel")
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            proc.arguments = ["reset", "ScreenCapture", "com.zexerif.TextGrabberPro"]
+            try? proc.run()
+            NSApp.terminate(nil)
+        }
     }
     
     @objc func startCapture() {
@@ -164,12 +246,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView = NSHostingView(rootView: SelectionOverlayView { [weak self, weak window] rect in
                 guard let self = self, let window = window else { return }
                 
-                print("[TextGrabber] Selection completed: \(rect)")
+                print("[TextGrabber] Selection completed (local): \(rect)")
+                
+                // Convert local window rect to global screen coordinates (top-left origin).
+                // CGWindowListCreateImage and screencapture both expect global coordinates.
+                guard let screen = window.screen else { return }
+                let primaryScreen = NSScreen.screens[0]
+                let primaryHeight = primaryScreen.frame.height
+                
+                // globalX = screen origin X + local X
+                // globalY = (primary height - screen maxY) + local Y
+                let globalRect = CGRect(
+                    x: screen.frame.origin.x + rect.origin.x,
+                    y: (primaryHeight - screen.frame.maxY) + rect.origin.y,
+                    width: rect.width,
+                    height: rect.height
+                )
+                
                 let windowID = CGWindowID(window.windowNumber)
                 
-                // CRITICAL: Capture BEFORE hiding the window to ensure the window ID is valid 
-                // for the .optionOnScreenBelowWindow logic.
-                self.captureArea(rect: rect, belowWindowID: windowID)
+                // CRITICAL: Capture BEFORE hiding the window.
+                self.captureArea(rect: globalRect, belowWindowID: windowID)
                 
                 // Now hide and cleanup.
                 window.orderOut(nil)
