@@ -120,7 +120,7 @@ struct HelpView: View {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("How to Use").font(.headline)
-                    Text("1. Click the TextGrabber icon in your menu bar.\n2. Select 'Capture Text' (or press Cmd+C).\n3. Drag to select any area of your screen.\n4. Highlight the recognized text in the result window to copy it.")
+                    Text("1. Click the TextGrabber icon in your menu bar.\n2. Select 'Capture Text'.\n3. Drag to select any area of your screen.\n4. Highlight the recognized text in the result window to copy it.")
                 }
                 
                 Divider()
@@ -128,7 +128,7 @@ struct HelpView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("📸 Seeing only your wallpaper?").font(.headline).foregroundColor(.orange)
                     Text("This is a common macOS permission quirk. If your screenshots are missing windows and only show the desktop background:")
-                    Text("1. Go to the menu icon and select 'Reset Permissions'.\n2. The app will quit. Launch it again from your Applications folder.\n3. Grant 'Screen Recording' permission when prompted.\n4. If it doesn't prompt, manually enable it in System Settings > Privacy & Security > Screen Recording.")
+                    Text("1. Go to the menu icon and select 'Reset Permissions'.\n2. The app will quit. Launch it again from where you saved it (we recommend moving it to your Applications folder first).\n3. Grant 'Screen Recording' permission when prompted.\n4. If it doesn't prompt, manually enable it in System Settings > Privacy & Security > Screen Recording.")
                 }
                 
                 VStack(alignment: .leading, spacing: 8) {
@@ -171,7 +171,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Capture")
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Capture Text", action: #selector(startCapture), keyEquivalent: "c"))
+        menu.addItem(NSMenuItem(title: "Capture Text", action: #selector(startCapture), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Help & Troubleshooting", action: #selector(showHelp), keyEquivalent: "/"))
         menu.addItem(NSMenuItem(title: "Reset Permissions...", action: #selector(resetPermissions), keyEquivalent: ""))
