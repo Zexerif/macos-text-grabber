@@ -113,12 +113,24 @@ struct OCRResultView: View {
 struct HighlightBox: View { let rect: CGRect; let isSelected: Bool; var body: some View { Rectangle().fill(isSelected ? Color.accentColor.opacity(0.4) : Color.white.opacity(0.001)).frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY) } }
 struct SelectionRectView: View { let start: CGPoint; let end: CGPoint; var body: some View { let rect = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(start.x - end.x), height: abs(start.y - end.y)); Rectangle().stroke(Color.accentColor, lineWidth: 1).background(Color.accentColor.opacity(0.1)).frame(width: rect.width, height: rect.height).offset(x: rect.minX, y: rect.minY) } }
 
+// Frees the result window from memory when the user closes it.
+class ResultWindowDelegate: NSObject, NSWindowDelegate {
+    var onClose: () -> Void
+    init(onClose: @escaping () -> Void) { self.onClose = onClose }
+    func windowWillClose(_ notification: Notification) { onClose() }
+}
+
 // MARK: - App Delegate
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var selectionWindow: NSWindow?
+    var resultWindow: NSWindow?
+    var resultWindowDelegate: ResultWindowDelegate? // must be held strongly (NSWindow.delegate is weak)
     
-    func applicationDidFinishLaunching(_ notification: Notification) { setupStatusItem() }
+    func applicationDidFinishLaunching(_ notification: Notification) { 
+        print("[TextGrabber] App launched and status item initialized")
+        setupStatusItem() 
+    }
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.image = NSImage(systemSymbolName: "text.viewfinder", accessibilityDescription: "Capture")
@@ -129,47 +141,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func startCapture() {
+        print("[TextGrabber] Starting capture...")
         DispatchQueue.main.async {
-            self.selectionWindow?.close()
-            guard let screen = NSScreen.main else { return }
+            // Clear any existing selection window before starting a new one.
+            self.selectionWindow?.orderOut(nil)
+            self.selectionWindow = nil
+            
+            guard let screen = NSScreen.main else {
+                print("[TextGrabber] Error: No main screen found")
+                return
+            }
+            
             let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            window.backgroundColor = .clear; window.isOpaque = false
+            window.backgroundColor = .clear
+            window.isOpaque = false
             window.level = .screenSaver
             window.ignoresMouseEvents = false
+            window.isReleasedWhenClosed = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.contentView = NSHostingView(rootView: SelectionOverlayView { [weak self] rect in
-                // Capture everything BELOW our overlay window by passing its ID.
-                // This excludes the overlay from the screenshot without hiding it first,
-                // so there's no race condition with the compositor.
+            
+            // We use a local strong reference to ensure the window stays alive during setup.
+            window.contentView = NSHostingView(rootView: SelectionOverlayView { [weak self, weak window] rect in
+                guard let self = self, let window = window else { return }
+                
+                print("[TextGrabber] Selection completed: \(rect)")
                 let windowID = CGWindowID(window.windowNumber)
-                self?.selectionWindow?.orderOut(nil)
-                self?.captureArea(rect: rect, belowWindowID: windowID)
+                
+                // CRITICAL: Capture BEFORE hiding the window to ensure the window ID is valid 
+                // for the .optionOnScreenBelowWindow logic.
+                self.captureArea(rect: rect, belowWindowID: windowID)
+                
+                // Now hide and cleanup.
+                window.orderOut(nil)
+                if self.selectionWindow === window {
+                    self.selectionWindow = nil
+                }
             })
+            
             window.makeKeyAndOrderFront(nil)
             self.selectionWindow = window
             NSApp.activate(ignoringOtherApps: true)
+            print("[TextGrabber] Overlay window displayed")
         }
     }
     
     func captureArea(rect: CGRect, belowWindowID: CGWindowID) {
-        // Capture all windows BELOW our selection overlay (excluding it).
-        // .optionOnScreenBelowWindow with our window ID means the overlay is
-        // never in the image — no hiding, no delay, no race condition.
-        //
-        // SwiftUI drag coords use top-left origin. CGWindowListCreateImage also
-        // uses top-left origin for the primary screen. No coordinate flip needed.
+        print("[TextGrabber] Capturing area \(rect) below window \(belowWindowID)...")
         if let cgImage = CGWindowListCreateImage(
             rect,
             .optionOnScreenBelowWindow,
             belowWindowID,
             .bestResolution
-        ), cgImage.width > 4 {
-            let image = NSImage(cgImage: cgImage, size: rect.size)
-            performOCR(on: cgImage, image: image)
+        ) {
+            if cgImage.width > 4 && cgImage.height > 4 {
+                print("[TextGrabber] CGWindowList capture successful (\(cgImage.width)x\(cgImage.height))")
+                let image = NSImage(cgImage: cgImage, size: rect.size)
+                performOCR(on: cgImage, image: image)
+                return
+            } else {
+                print("[TextGrabber] CGWindowList returned empty image, falling back...")
+            }
         } else {
-            // Fallback: screencapture CLI (macOS 14+ where CGWindowListCreateImage may fail)
-            captureViaScreencapture(rect: rect)
+            print("[TextGrabber] CGWindowListCreateImage returned nil, falling back...")
         }
+        
+        // Fallback: screencapture CLI
+        captureViaScreencapture(rect: rect)
     }
 
     func captureViaScreencapture(rect: CGRect) {
@@ -196,33 +233,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func performOCR(on cgImage: CGImage, image: NSImage) {
-        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let request = VNRecognizeTextRequest { (request, error) in
-            guard let results = request.results as? [VNRecognizedTextObservation] else { return }
-            var tokens: [TokenObservation] = []
-            for obs in results {
-                guard let candidate = obs.topCandidates(1).first else { continue }
-                let str = candidate.string
-                str.enumerateSubstrings(in: str.startIndex..., options: .byWords) { substring, range, _, _ in
-                    if let substring = substring, let box = try? candidate.boundingBox(for: range) {
-                        tokens.append(TokenObservation(text: substring, boundingBox: box.boundingBox))
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let request = VNRecognizeTextRequest { [weak self] (request, error) in
+                guard let results = request.results as? [VNRecognizedTextObservation] else { return }
+                var tokens: [TokenObservation] = []
+                for obs in results {
+                    guard let candidate = obs.topCandidates(1).first else { continue }
+                    let str = candidate.string
+                    str.enumerateSubstrings(in: str.startIndex..., options: .byWords) { substring, range, _, _ in
+                        if let substring = substring, let box = try? candidate.boundingBox(for: range) {
+                            tokens.append(TokenObservation(text: substring, boundingBox: box.boundingBox))
+                        }
                     }
                 }
+                DispatchQueue.main.async { self?.showResultWindow(image: image, tokens: tokens) }
             }
-            DispatchQueue.main.async { self.showResultWindow(image: image, tokens: tokens) }
+            request.recognitionLevel = .accurate
+            try? requestHandler.perform([request])
         }
-        request.recognitionLevel = .accurate
-        try? requestHandler.perform([request])
     }
     
     func showResultWindow(image: NSImage, tokens: [TokenObservation]) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.center(); window.title = "TextGrabber"; window.contentView = NSHostingView(rootView: OCRResultView(image: image, tokens: tokens)); window.makeKeyAndOrderFront(nil); window.level = .floating; window.isReleasedWhenClosed = false
+        window.isReleasedWhenClosed = false
+        window.center(); window.title = "TextGrabber"
+        window.contentView = NSHostingView(rootView: OCRResultView(image: image, tokens: tokens))
+        window.makeKeyAndOrderFront(nil); window.level = .floating
+        // Use a delegate to nil our refs when the window closes, so memory is freed.
+        // NSWindow.delegate is weak, so we must hold resultWindowDelegate strongly ourselves.
+        resultWindowDelegate = ResultWindowDelegate { [weak self] in
+            self?.resultWindow = nil
+            self?.resultWindowDelegate = nil
+        }
+        window.delegate = resultWindowDelegate
+        self.resultWindow = window
         NSApp.activate(ignoringOtherApps: true)
     }
 }
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
-app.delegate = delegate
+// Ensure the delegate is held strongly in the global scope
+var globalDelegate: AppDelegate? = delegate
+app.delegate = globalDelegate
 app.run()
