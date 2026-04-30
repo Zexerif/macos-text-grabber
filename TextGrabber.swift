@@ -241,15 +241,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 for obs in results {
                     guard let candidate = obs.topCandidates(1).first else { continue }
                     let str = candidate.string
-                    str.enumerateSubstrings(in: str.startIndex..., options: .byWords) { substring, range, _, _ in
-                        if let substring = substring, let box = try? candidate.boundingBox(for: range) {
-                            tokens.append(TokenObservation(text: substring, boundingBox: box.boundingBox))
+                    
+                    // Use a regex to split by whitespace instead of .byWords.
+                    // This ensures punctuation (%, !, ?, etc.) is included in the tokens.
+                    let range = NSRange(str.startIndex..., in: str)
+                    if let regex = try? NSRegularExpression(pattern: "\\S+") {
+                        regex.enumerateMatches(in: str, range: range) { match, _, _ in
+                            guard let matchRange = match?.range,
+                                  let swiftRange = Range(matchRange, in: str) else { return }
+                            
+                            let substring = String(str[swiftRange])
+                            if let box = try? candidate.boundingBox(for: swiftRange) {
+                                tokens.append(TokenObservation(text: substring, boundingBox: box.boundingBox))
+                            }
                         }
                     }
                 }
                 DispatchQueue.main.async { self?.showResultWindow(image: image, tokens: tokens) }
             }
-            request.recognitionLevel = .accurate
+            request.recognitionLevel = .accurate; request.usesLanguageCorrection = false
             try? requestHandler.perform([request])
         }
     }
