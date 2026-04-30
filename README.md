@@ -19,7 +19,7 @@ A lightweight, native macOS utility for high-precision screen OCR.
 ## 💻 System Compatibility
 
 - **Intel Macs**: Supported natively.
-- **Apple Silicon (M1, M2, M3)**: Fully supported.
+- **Apple Silicon (M1-M5)**: Fully supported using Rosetta.
 - **macOS Requirement**: Works on macOS 11.0 (Big Sur) and newer.
 
 > [!NOTE]
